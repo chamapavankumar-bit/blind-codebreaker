@@ -1,56 +1,11 @@
 /**
  =========================================================
-  BLIND CODEBREAKER - ONLINE MULTIPLAYER SERVER
- =========================================================
-
- STEP-BY-STEP USAGE (READ ONCE):
-
- 1. Create a folder:
-    mkdir blind-codebreaker
-    cd blind-codebreaker
-
- 2. Create this file:
-    server.js   (paste EVERYTHING from this file)
-
- 3. Create package.json (very small):
-    {
-      "name": "blind-codebreaker",
-      "version": "1.0.0",
-      "main": "server.js",
-      "scripts": { "start": "node server.js" },
-      "dependencies": { "ws": "^8.15.0" }
-    }
-
- 4. Install dependencies:
-    npm install
-
- 5. Test locally:
-    node server.js
-    → Server runs on ws://localhost:8080
-
- 6. Push to GitHub:
-    git init
-    git add .
-    git commit -m "Blind Codebreaker multiplayer server"
-    git branch -M main
-    git remote add origin https://github.com/YOUR_NAME/blind-codebreaker.git
-    git push -u origin main
-
- 7. Deploy on Render:
-    - New → Web Service
-    - Runtime: Node
-    - Start command: npm start
-    - Done 🎉
-
- 8. Frontend connects using:
-    wss://YOUR-APP.onrender.com
-
+  BLIND CODEBREAKER - ONLINE MULTIPLAYER SERVER (NAMED)
  =========================================================
 */
 
 const WebSocket = require("ws");
 
-// Render provides PORT automatically
 const PORT = process.env.PORT || 8080;
 const wss = new WebSocket.Server({ port: PORT });
 
@@ -60,6 +15,7 @@ console.log("Server running on port:", PORT);
  ROOM STRUCTURE
  {
    players: [socket, socket],
+   names: ["", ""],
    secrets: ["", ""],
    histories: [[], []],
    turn: 0
@@ -67,12 +23,11 @@ console.log("Server running on port:", PORT);
 */
 const rooms = {};
 
-// Utility: generate 4-digit room code
+// Generate 4-digit room code
 function generateRoomCode() {
   return Math.floor(1000 + Math.random() * 9000).toString();
 }
 
-// Core WebSocket handling
 wss.on("connection", socket => {
   console.log("New client connected");
 
@@ -84,16 +39,13 @@ wss.on("connection", socket => {
       return;
     }
 
-    /**
-     -------------------------
-     CREATE ROOM
-     -------------------------
-     */
+    /* ---------------- CREATE ROOM ---------------- */
     if (data.type === "create_room") {
       const roomCode = generateRoomCode();
 
       rooms[roomCode] = {
         players: [socket],
+        names: ["", ""],
         secrets: ["", ""],
         histories: [[], []],
         turn: 0
@@ -110,11 +62,7 @@ wss.on("connection", socket => {
       console.log("Room created:", roomCode);
     }
 
-    /**
-     -------------------------
-     JOIN ROOM
-     -------------------------
-     */
+    /* ---------------- JOIN ROOM ---------------- */
     if (data.type === "join_room") {
       const room = rooms[data.roomCode];
       if (!room || room.players.length >= 2) return;
@@ -130,42 +78,44 @@ wss.on("connection", socket => {
       console.log("Player joined room:", data.roomCode);
     }
 
-    /**
-     -------------------------
-     SET SECRET
-     -------------------------
-     */
-   if (data.type === "set_secret") {
-  const room = rooms[socket.roomCode];
-  if (!room) return;
+    /* ---------------- SET NAME ---------------- */
+    if (data.type === "set_name") {
+      const room = rooms[socket.roomCode];
+      if (!room) return;
 
-  room.secrets[socket.playerIndex] = data.secret;
+      room.names[socket.playerIndex] = data.name;
+    }
 
-  // ✅ CHECK IF BOTH SECRETS ARE SET
-  if (room.secrets[0] && room.secrets[1]) {
-    room.turn = 0; // Player 1 starts
+    /* ---------------- SET SECRET ---------------- */
+    if (data.type === "set_secret") {
+      const room = rooms[socket.roomCode];
+      if (!room) return;
 
-    room.players.forEach((p, index) => {
-      p.send(JSON.stringify({
-        type: "turn",
-        player: room.turn,
-        yourTurn: index === room.turn
-      }));
-    });
-  }
+      room.secrets[socket.playerIndex] = data.secret;
+
+      // Start game when both secrets are ready
+      if (
+  room.secrets[0] &&
+  room.secrets[1] &&
+  room.names[0] &&
+  room.names[1]
+) {
+  room.turn = 0;
+
+  room.players.forEach((p, index) => {
+    p.send(JSON.stringify({
+      type: "turn",
+      activeName: room.names[room.turn],
+      yourTurn: index === room.turn
+    }));
+  });
 }
 
-
-    /**
-     -------------------------
-     MAKE GUESS
-     -------------------------
-     */
+    /* ---------------- MAKE GUESS ---------------- */
     if (data.type === "guess") {
       const room = rooms[socket.roomCode];
       if (!room) return;
 
-      // Enforce turns
       if (room.turn !== socket.playerIndex) return;
 
       const opponentIndex = socket.playerIndex === 0 ? 1 : 0;
@@ -183,27 +133,22 @@ wss.on("connection", socket => {
       const result = { guess, digits, positions };
       room.histories[socket.playerIndex].push(result);
 
-      // Send feedback ONLY to current player
       socket.send(JSON.stringify({
         type: "feedback",
-        history: room.histories[socket.playerIndex],
-        digits,
-        positions
+        history: room.histories[socket.playerIndex]
       }));
 
-      // Win condition
       if (positions === 4) {
         socket.send(JSON.stringify({ type: "win" }));
         return;
       }
 
-      // Switch turn
       room.turn = opponentIndex;
 
       room.players.forEach((p, index) => {
         p.send(JSON.stringify({
           type: "turn",
-          player: room.turn,
+          activeName: room.names[room.turn],
           yourTurn: index === room.turn
         }));
       });
@@ -211,9 +156,6 @@ wss.on("connection", socket => {
   });
 
   socket.on("close", () => {
-    console.log("Client disconnected");
-
-    // Cleanup room if player leaves
     if (socket.roomCode && rooms[socket.roomCode]) {
       delete rooms[socket.roomCode];
       console.log("Room closed:", socket.roomCode);
