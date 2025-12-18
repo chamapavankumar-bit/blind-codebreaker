@@ -135,12 +135,26 @@ wss.on("connection", socket => {
      SET SECRET
      -------------------------
      */
-    if (data.type === "set_secret") {
-      const room = rooms[socket.roomCode];
-      if (!room) return;
+   if (data.type === "set_secret") {
+  const room = rooms[socket.roomCode];
+  if (!room) return;
 
-      room.secrets[socket.playerIndex] = data.secret;
-    }
+  room.secrets[socket.playerIndex] = data.secret;
+
+  // ✅ CHECK IF BOTH SECRETS ARE SET
+  if (room.secrets[0] && room.secrets[1]) {
+    room.turn = 0; // Player 1 starts
+
+    room.players.forEach((p, index) => {
+      p.send(JSON.stringify({
+        type: "turn",
+        player: room.turn,
+        yourTurn: index === room.turn
+      }));
+    });
+  }
+}
+
 
     /**
      -------------------------
