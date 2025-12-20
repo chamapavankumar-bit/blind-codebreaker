@@ -3,176 +3,114 @@ const WebSocket = require("ws");
 const PORT = process.env.PORT || 8080;
 const wss = new WebSocket.Server({ port: PORT });
 
-console.log("Server running on port:", PORT);
+console.log("Server running on port", PORT);
 
-/*
-Room structure:
-{
-  players: [socket, socket],
-  names: ["", ""],
-  secrets: ["", ""],
-  histories: [[], []],
-  turn: 0
-}
-*/
 const rooms = {};
 
-function generateRoomCode() {
+function roomCode() {
   return Math.floor(1000 + Math.random() * 9000).toString();
 }
 
-wss.on("connection", (socket) => {
-  console.log("Client connected");
+wss.on("connection", (ws) => {
+  ws.on("message", (msg) => {
+    const data = JSON.parse(msg);
 
-  socket.on("message", (msg) => {
-    let data;
-    try {
-      data = JSON.parse(msg);
-    } catch {
+    /* SET NAME */
+    if (data.type === "set_name") {
+      ws.name = data.name;
       return;
     }
 
-    /* ---------- CREATE ROOM ---------- */
+    /* CREATE ROOM */
     if (data.type === "create_room") {
-      const roomCode = generateRoomCode();
-
-      rooms[roomCode] = {
-        players: [socket],
-        names: ["", ""],
-        secrets: ["", ""],
-        histories: [[], []],
+      const code = roomCode();
+      rooms[code] = {
+        players: [ws],
+        secrets: {},
         turn: 0,
       };
+      ws.room = code;
+      ws.index = 0;
 
-      socket.roomCode = roomCode;
-      socket.playerIndex = 0;
-
-      socket.send(
-        JSON.stringify({
-          type: "room_created",
-          roomCode,
-        })
-      );
+      ws.send(JSON.stringify({
+        type: "room_created",
+        roomCode: code
+      }));
       return;
     }
 
-    /* ---------- JOIN ROOM ---------- */
+    /* JOIN ROOM */
     if (data.type === "join_room") {
       const room = rooms[data.roomCode];
-      if (!room || room.players.length >= 2) return;
+      if (!room || room.players.length === 2) return;
 
-      room.players.push(socket);
-      socket.roomCode = data.roomCode;
-      socket.playerIndex = 1;
+      room.players.push(ws);
+      ws.room = data.roomCode;
+      ws.index = 1;
 
-      room.players.forEach((p) =>
+      room.players.forEach(p =>
         p.send(JSON.stringify({ type: "game_start" }))
       );
       return;
     }
 
-    /* ---------- SET NAME ---------- */
-    if (data.type === "set_name") {
-      const room = rooms[socket.roomCode];
-      if (!room) return;
-
-      room.names[socket.playerIndex] = data.name;
-      return;
-    }
-
-    /* ---------- SET SECRET ---------- */
+    /* SET SECRET */
     if (data.type === "set_secret") {
-      const room = rooms[socket.roomCode];
-      if (!room) return;
+      const room = rooms[ws.room];
+      room.secrets[ws.index] = data.secret;
 
-      room.secrets[socket.playerIndex] = data.secret;
-
-      // Start only when both secrets & names exist
-      if (
-        room.secrets[0] &&
-        room.secrets[1] &&
-        room.names[0] &&
-        room.names[1]
-      ) {
-        room.turn = 0;
-
-        room.players.forEach((p, index) => {
-          p.send(
-            JSON.stringify({
-              type: "turn",
-              yourTurn: index === room.turn,
-              activeName: room.names[room.turn],
-            })
-          );
-        });
+      if (room.secrets[0] && room.secrets[1]) {
+        room.players.forEach((p, i) =>
+          p.send(JSON.stringify({
+            type: "turn",
+            yourTurn: i === room.turn,
+            activeName: room.players[room.turn].name
+          }))
+        );
       }
       return;
     }
 
-    /* ---------- GUESS ---------- */
+    /* GUESS */
     if (data.type === "guess") {
-      const room = rooms[socket.roomCode];
-      if (!room) return;
+      const room = rooms[ws.room];
+      if (room.turn !== ws.index) return;
 
-      if (room.turn !== socket.playerIndex) return;
-
-      const opponentIndex = socket.playerIndex === 0 ? 1 : 0;
-      const secret = room.secrets[opponentIndex];
+      const opp = ws.index === 0 ? 1 : 0;
+      const secret = room.secrets[opp];
       const guess = data.guess;
 
-      let digits = 0;
-      let positions = 0;
-
+      let d = 0, p = 0;
       for (let i = 0; i < 4; i++) {
-        if (secret.includes(guess[i])) digits++;
-        if (secret[i] === guess[i]) positions++;
+        if (secret.includes(guess[i])) d++;
+        if (secret[i] === guess[i]) p++;
       }
 
-      room.histories[socket.playerIndex].push({
+      ws.send(JSON.stringify({
+        type: "feedback",
         guess,
-        digits,
-        positions,
-      });
+        digits: d,
+        positions: p
+      }));
 
-      socket.send(
-        JSON.stringify({
-          type: "feedback",
-          history: room.histories[socket.playerIndex],
-        })
-      );
-
-      // 🎉 GAME OVER
-      if (positions === 4) {
-        room.players.forEach((p) => {
-          p.send(
-            JSON.stringify({
-              type: "game_over",
-              winnerIndex: socket.playerIndex,
-              winnerName: room.names[socket.playerIndex],
-            })
-          );
-        });
+      if (p === 4) {
+        room.players.forEach(pl =>
+          pl.send(JSON.stringify({
+            type: "game_over",
+            winner: ws.name
+          }))
+        );
         return;
       }
 
-      // Next turn
-      room.turn = opponentIndex;
-
-      room.players.forEach((p, index) => {
-        p.send(
-          JSON.stringify({
-            type: "turn",
-            yourTurn: index === room.turn,
-            activeName: room.names[room.turn],
-          })
-        );
-      });
-    }
-  });
-
-  socket.on("close", () => {
-    if (socket.roomCode && rooms[socket.roomCode]) {
-      delete rooms[socket.roomCode];
+      room.turn = opp;
+      room.players.forEach((p, i) =>
+        p.send(JSON.stringify({
+          type: "turn",
+          yourTurn: i === room.turn,
+          activeName: room.players[room.turn].name
+        }))
+      );
     }
   });
 });
