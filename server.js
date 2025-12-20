@@ -1,6 +1,6 @@
 const WebSocket = require("ws");
 
-const PORT = process.env.PORT || 8080;
+const PORT = 8080;
 const wss = new WebSocket.Server({ port: PORT });
 
 console.log("Server running on port", PORT);
@@ -12,23 +12,30 @@ function roomCode() {
 }
 
 wss.on("connection", (ws) => {
-  ws.on("message", (msg) => {
-    const data = JSON.parse(msg);
+  ws.room = null;
+  ws.index = null;
+  ws.name = null;
 
-    /* SET NAME */
-    if (data.type === "set_name") {
-      ws.name = data.name;
+  ws.on("message", (raw) => {
+    const msg = JSON.parse(raw);
+
+    if (msg.type === "set_name") {
+      ws.name = msg.name;
       return;
     }
 
-    /* CREATE ROOM */
-    if (data.type === "create_room") {
+    if (msg.type === "create_room") {
+      if (!ws.name) return;
+
       const code = roomCode();
       rooms[code] = {
         players: [ws],
+        names: { 0: ws.name },
         secrets: {},
-        turn: 0,
+        histories: { 0: [], 1: [] },
+        turn: 0
       };
+
       ws.room = code;
       ws.index = 0;
 
@@ -39,14 +46,17 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    /* JOIN ROOM */
-    if (data.type === "join_room") {
-      const room = rooms[data.roomCode];
+    if (msg.type === "join_room") {
+      if (!ws.name) return;
+
+      const room = rooms[msg.roomCode];
       if (!room || room.players.length === 2) return;
 
-      room.players.push(ws);
-      ws.room = data.roomCode;
+      ws.room = msg.roomCode;
       ws.index = 1;
+
+      room.players.push(ws);
+      room.names[1] = ws.name;
 
       room.players.forEach(p =>
         p.send(JSON.stringify({ type: "game_start" }))
@@ -54,63 +64,82 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    /* SET SECRET */
-    if (data.type === "set_secret") {
+    if (msg.type === "set_secret") {
       const room = rooms[ws.room];
-      room.secrets[ws.index] = data.secret;
+      room.secrets[ws.index] = msg.secret;
 
       if (room.secrets[0] && room.secrets[1]) {
+        const active = room.turn;
         room.players.forEach((p, i) =>
           p.send(JSON.stringify({
             type: "turn",
-            yourTurn: i === room.turn,
-            activeName: room.players[room.turn].name
+            yourTurn: i === active,
+            opponent: room.names[i === 0 ? 1 : 0]
           }))
         );
       }
       return;
     }
 
-    /* GUESS */
-    if (data.type === "guess") {
+    if (msg.type === "guess") {
       const room = rooms[ws.room];
       if (room.turn !== ws.index) return;
 
-      const opp = ws.index === 0 ? 1 : 0;
-      const secret = room.secrets[opp];
-      const guess = data.guess;
+      const opponent = ws.index === 0 ? 1 : 0;
+      const secret = room.secrets[opponent];
+      const guess = msg.guess;
 
-      let d = 0, p = 0;
+      let digits = 0, positions = 0;
       for (let i = 0; i < 4; i++) {
-        if (secret.includes(guess[i])) d++;
-        if (secret[i] === guess[i]) p++;
+        if (secret.includes(guess[i])) digits++;
+        if (secret[i] === guess[i]) positions++;
       }
 
+      room.histories[ws.index].push({ guess, digits, positions });
+
       ws.send(JSON.stringify({
-        type: "feedback",
-        guess,
-        digits: d,
-        positions: p
+        type: "history",
+        history: room.histories[ws.index]
       }));
 
-      if (p === 4) {
-        room.players.forEach(pl =>
-          pl.send(JSON.stringify({
-            type: "game_over",
+      if (positions === 4) {
+        room.players.forEach(p =>
+          p.send(JSON.stringify({
+            type: "win",
             winner: ws.name
           }))
         );
         return;
       }
 
-      room.turn = opp;
+      room.turn = opponent;
       room.players.forEach((p, i) =>
         p.send(JSON.stringify({
           type: "turn",
           yourTurn: i === room.turn,
-          activeName: room.players[room.turn].name
+          opponent: room.names[i === 0 ? 1 : 0]
         }))
       );
     }
+  });
+
+  // 🔴 CRITICAL FIX: HANDLE EXIT / DISCONNECT
+  ws.on("close", () => {
+ console.log("Socket closed:", ws.name, ws.room); //
+    if (!ws.room || !rooms[ws.room]) return;
+
+    const room = rooms[ws.room];
+
+    room.players.forEach(p => {
+      if (p !== ws && p.readyState === WebSocket.OPEN) {
+       p.send(JSON.stringify({
+  type: "opponent_left",
+  name: ws.name
+}));
+
+      }
+    });
+
+    delete rooms[ws.room];
   });
 });

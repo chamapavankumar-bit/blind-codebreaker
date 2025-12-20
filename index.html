@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Blind Codebreaker</title>
+
+<style>
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #020617;
+  color: #e5e7eb;
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.card {
+  width: 100%;
+  max-width: 420px;
+  background: #0f172a;
+  padding: 20px;
+  border-radius: 16px;
+  box-sizing: border-box;
+}
+
+.hidden { display: none !important; }
+
+h2 {
+  text-align: center;
+  margin: 0 0 14px 0;
+}
+
+input, button {
+  width: 100%;
+  height: 44px;
+  margin-top: 10px;
+  padding: 0 12px;
+  font-size: 15px;
+  border-radius: 10px;
+  border: none;
+  box-sizing: border-box;
+}
+
+input {
+  background: #020617;
+  color: #e5e7eb;
+  border: 1px solid #1e293b;
+}
+
+input:disabled { opacity: 0.5; }
+
+button {
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: transparent;
+  border: 1px solid #334155;
+  color: #cbd5f5;
+}
+
+.turn {
+  margin: 12px 0;
+  padding: 10px;
+  border-radius: 10px;
+  text-align: center;
+  font-weight: 600;
+}
+
+.turn.your {
+  background: rgba(34,197,94,0.15);
+  color: #22c55e;
+}
+
+.turn.opp {
+  background: rgba(234,179,8,0.15);
+  color: #eab308;
+}
+
+.history {
+  margin-top: 12px;
+  max-height: 180px;
+  overflow-y: auto;
+  font-size: 14px;
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  border-bottom: 1px dashed #334155;
+}
+
+.modal-bg {
+  position: fixed;
+  inset: 0;
+  background: rgba(2,6,23,0.85);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.modal {
+  background: #020617;
+  padding: 20px;
+  border-radius: 14px;
+  width: 90%;
+  max-width: 420px;
+}
+
+.modal h3 {
+  margin-top: 0;
+  text-align: center;
+}
+</style>
+</head>
+
+<body>
+
+<div class="card">
+
+<h2>Blind Codebreaker</h2>
+
+<!-- NAME -->
+<div id="name">
+  <input id="nameInput" placeholder="Your name" />
+  <button onclick="setName()">Continue</button>
+</div>
+
+<!-- HOME -->
+<div id="home" class="hidden">
+  <button class="secondary" onclick="openInstructions()">Instructions</button>
+  <button onclick="createRoom()">Create Room</button>
+  <button class="secondary" onclick="showJoin()">Join Room</button>
+  <input id="roomInput" class="hidden" placeholder="Enter room code" />
+  <button id="joinBtn" class="hidden" onclick="joinRoom()">Join</button>
+</div>
+
+<!-- WAITING -->
+<div id="waiting" class="hidden">
+  <p style="text-align:center; opacity:0.7;">Room Code</p>
+  <h2 id="roomCode"></h2>
+  <p style="text-align:center; opacity:0.6;">Waiting for opponent…</p>
+</div>
+
+<!-- SET SECRET -->
+<div id="setup" class="hidden">
+  <input id="secretInput" maxlength="4" placeholder="4 unique digits" />
+  <button onclick="setSecret()">Lock Secret</button>
+</div>
+
+<!-- GAME -->
+<div id="game" class="hidden">
+  <div id="turn" class="turn"></div>
+
+  <input id="guessInput" maxlength="4"
+    placeholder="Enter 4-digit guess"
+    inputmode="numeric" pattern="\d*" />
+
+  <button id="guessButton" onclick="guess()">Submit Guess</button>
+  <div id="history" class="history"></div>
+</div>
+
+</div>
+
+<!-- INSTRUCTIONS -->
+<div id="instructions" class="modal-bg hidden" onclick="closeInstructions()">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h3>How to Play</h3>
+    <ul>
+      <li>Each player sets a <b>4-digit secret</b>.</li>
+      <li>Digits must be <b>unique</b> and not start with 0.</li>
+      <li>Players take turns guessing.</li>
+      <li><b>D</b> = correct digits</li>
+      <li><b>P</b> = correct positions</li>
+      <li><b>P = 4</b> wins 🎉</li>
+    </ul>
+    <button onclick="closeInstructions()">Got it</button>
+  </div>
+</div>
+
+<!-- GAME OVER -->
+<div id="gameOverModal" class="modal-bg hidden">
+  <div class="modal">
+    <h3 id="gameOverText"></h3>
+    <button onclick="playAgain()">Play Again</button>
+    <button class="secondary" onclick="exitGame()">Exit</button>
+  </div>
+</div>
+
+<script>
+window.onload = () => openInstructions();
+
+const ws = new WebSocket("ws://localhost:8080");
+let myName = "", opponent = "";
+
+function show(id) {
+  ["name","home","waiting","setup","game"].forEach(x =>
+    document.getElementById(x).classList.add("hidden"));
+  document.getElementById(id).classList.remove("hidden");
+}
+
+function openInstructions() { instructions.classList.remove("hidden"); }
+function closeInstructions() { instructions.classList.add("hidden"); }
+
+function setName() {
+  myName = nameInput.value.trim();
+  if (!myName) return;
+  ws.send(JSON.stringify({ type:"set_name", name: myName }));
+  show("home");
+}
+
+function createRoom() { ws.send(JSON.stringify({ type:"create_room" })); }
+
+function showJoin() {
+  roomInput.classList.remove("hidden");
+  joinBtn.classList.remove("hidden");
+}
+
+function joinRoom() {
+  ws.send(JSON.stringify({ type:"join_room", roomCode: roomInput.value.trim() }));
+}
+
+function setSecret() {
+  ws.send(JSON.stringify({ type:"set_secret", secret: secretInput.value }));
+  secretInput.value = "";
+  show("waiting");
+}
+
+function guess() {
+  if (!/^\d{4}$/.test(guessInput.value)) return;
+  ws.send(JSON.stringify({ type:"guess", guess: guessInput.value }));
+  guessInput.value = "";
+}
+
+function playAgain() {
+  document.getElementById("history").innerHTML = "";
+  document.getElementById("gameOverModal").classList.add("hidden");
+  show("setup");
+}
+
+function exitGame() {
+  ws.close();
+  location.reload();
+}
+
+ws.onmessage = e => {
+  const d = JSON.parse(e.data);
+
+  if (d.type === "room_created") {
+    roomCode.innerText = d.roomCode;
+    show("waiting");
+  }
+
+  if (d.type === "game_start") show("setup");
+
+  if (d.type === "turn") {
+    opponent = d.opponent || opponent;
+    turn.className = "turn " + (d.yourTurn ? "your" : "opp");
+    turn.innerText = d.yourTurn ? "Your turn" : `${opponent} is thinking…`;
+    guessInput.disabled = !d.yourTurn;
+    guessButton.disabled = !d.yourTurn;
+    show("game");
+  }
+
+  if (d.type === "history") {
+    const h = document.getElementById("history");
+    h.innerHTML = "";
+    d.history.forEach(x => {
+      h.innerHTML =
+        `<div class="row"><span>${x.guess}</span>
+         <span>D:${x.digits} | P:${x.positions}</span></div>` + h.innerHTML;
+    });
+  }
+
+  if (d.type === "opponent_left") {
+    alert(`${d.name} left the game`);
+    location.reload();
+  }
+
+  if (d.type === "win") {
+    gameOverText.innerText =
+      d.winner === myName ? "🎉 You won!" : `${d.winner} won the game`;
+    gameOverModal.classList.remove("hidden");
+  }
+};
+</script>
+
+</body>
+</html>
